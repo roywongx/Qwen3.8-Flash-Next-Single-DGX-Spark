@@ -40,6 +40,7 @@
 !/scripts/alert.sh
 !/scripts/memwatch-rotate.sh
 !/scripts/heartbeat.sh
+!/scripts/observe-snapshot.sh
 !/files/memwatch.sh
 !/files/build_ple_packed_table.py
 !/files/patch_ple_layer.py
