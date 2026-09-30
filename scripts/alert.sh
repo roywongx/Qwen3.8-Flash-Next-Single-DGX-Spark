@@ -20,9 +20,25 @@ if [[ -f "$REPO_DIR/.env" ]]; then
 fi
 ALERT_WEBHOOK="${ALERT_WEBHOOK:-}"
 RATE_STATE="$REPO_DIR/logs/.alert-state"
+UNSET_LOG="$REPO_DIR/logs/alert-unset.log"
 RATE_SECS="${ALERT_RATE_SECS:-900}"
+UNSET_NOTE_SECS="${ALERT_UNSET_NOTE_SECS:-3600}"
 
+# Missing-webhook note is rate-limited on its own clock, and deliberately
+# BEFORE the branch below: the supervisor retries an unfixed incident every
+# TICK_S (10 s), and this path returns before the message rate-limit runs.
+# Observed 2026-09-26: one event produced 24 identical log lines in 4 minutes
+# and zero deliveries. One line per hour is enough to notice a broken webhook.
 if [[ -z "$ALERT_WEBHOOK" ]]; then
+    _unsup=""
+    if [[ -s "$UNSET_LOG" ]]; then
+        read -r _unsup < "$UNSET_LOG" 2>/dev/null || true
+    fi
+    _now_s=$(date +%s)
+    if [[ -n "$_unsup" ]] && (( _now_s - _unsup < UNSET_NOTE_SECS )); then
+        exit 0
+    fi
+    printf '%s\n' "$_now_s" > "$UNSET_LOG" 2>/dev/null || true
     echo "$(date '+%F %T') [alert] ALERT_WEBHOOK unset; not sending: $MESSAGE" >> "$REPO_DIR/logs/alert.log" 2>/dev/null || true
     exit 0
 fi

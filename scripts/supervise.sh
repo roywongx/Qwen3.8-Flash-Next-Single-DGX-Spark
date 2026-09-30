@@ -48,9 +48,16 @@ TICK_S=10
 # Read the same env snapshot logic start.sh uses for the knobs the supervisor
 # needs (container name, memwatch floors, alerting). Environment wins; .env
 # is the fallback (same precedence as start.sh).
+#
+# `set -a` is load-bearing: `alert` is a CHILD PROCESS, and a plain `source`
+# only creates shell variables — ALERT_WEBHOOK would stay invisible to it and
+# every supervisor alert would degrade to "ALERT_WEBHOOK unset; not sending"
+# (observed 2026-09-26: 24 retries of one event, 0 delivered).
 if [[ -f "$REPO_DIR/.env" ]]; then
+    set -a
     # shellcheck source=.env
     source "$REPO_DIR/.env"
+    set +a
 fi
 CONTAINER_NAME="${TP1_CONTAINER_NAME:-vllm-fn-tp1}"
 MEMWATCH_MIN_GIB="${MEMWATCH_MIN_GIB:-6}"
@@ -87,7 +94,10 @@ PROBE_FAILS_BEFORE_EMERGENCY="${PROBE_FAILS_BEFORE_EMERGENCY:-5}"
 BREAKER_EMERGENCY_MAX="${BREAKER_EMERGENCY_MAX:-3}"
 BREAKER_WINDOW_S="${BREAKER_WINDOW_S:-7200}"
 BREAKER_RESET_ON_BOOT="${BREAKER_RESET_ON_BOOT:-1}"
-BREAKER_OPEN_ALERT_S="${BREAKER_OPEN_ALERT_S:-1800}"
+# A breaker that stays open all night used to repeat this every 30 min — 16
+# identical lines for one incident. The breaker is a "human must act" state, so
+# the first notice matters and the repeats carry no new information.
+BREAKER_OPEN_ALERT_S="${BREAKER_OPEN_ALERT_S:-21600}"
 PROBE_RETRY_S="${PROBE_RETRY_S:-60}"
 LOAD_GATE_WINDOW_S="${LOAD_GATE_WINDOW_S:-180}"
 
