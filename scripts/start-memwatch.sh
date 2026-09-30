@@ -5,7 +5,8 @@
 # drift. Runs memwatch in the background (nohup) and prints the log path.
 #
 # Env honoured (passed through to memwatch): MEMWATCH_MIN_FREE_GIB,
-# MEMWATCH_FREE_GATE_GIB, MEMWATCH_GRACE. Defaults match memwatch.sh's own.
+# MEMWATCH_WARN_FREE_GIB, MEMWATCH_FREE_GATE_GIB, MEMWATCH_GRACE. Defaults match
+# memwatch.sh's own.
 set -euo pipefail
 
 CONTAINER="${1:?container}"
@@ -13,7 +14,8 @@ MIN_GIB="${2:-6}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-2}"
+MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-0.5}"
+WARN_FREE_GIB="${MEMWATCH_WARN_FREE_GIB:-1}"
 FREE_GATE_GIB="${MEMWATCH_FREE_GATE_GIB:-10}"
 GRACE="${MEMWATCH_GRACE:-30}"
 MEMWATCH_LOG="${MEMWATCH_LOG:-$REPO_DIR/logs/memwatch-${CONTAINER}.log}"
@@ -24,7 +26,8 @@ mkdir -p "$REPO_DIR/logs/archive"
 # stops the pattern from matching the very pkill/-f command line we run.
 pkill -f "[f]iles/memwatch.sh $CONTAINER" 2>/dev/null || true
 
-MEMWATCH_MIN_FREE_GIB="$MIN_FREE_GIB" MEMWATCH_FREE_GATE_GIB="$FREE_GATE_GIB" \
+MEMWATCH_MIN_FREE_GIB="$MIN_FREE_GIB" MEMWATCH_WARN_FREE_GIB="$WARN_FREE_GIB" \
+    MEMWATCH_FREE_GATE_GIB="$FREE_GATE_GIB" \
     MEMWATCH_GRACE="$GRACE" MEMWATCH_LOG="$MEMWATCH_LOG" \
     nohup bash "$REPO_DIR/files/memwatch.sh" "$CONTAINER" "$MIN_GIB" \
     > "$MEMWATCH_LOG" 2>&1 &

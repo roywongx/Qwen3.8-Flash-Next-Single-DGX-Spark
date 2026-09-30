@@ -54,7 +54,8 @@ if [[ -f "$REPO_DIR/.env" ]]; then
 fi
 CONTAINER_NAME="${TP1_CONTAINER_NAME:-vllm-fn-tp1}"
 MEMWATCH_MIN_GIB="${MEMWATCH_MIN_GIB:-6}"
-MEMWATCH_MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-2}"
+MEMWATCH_MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-0.5}"
+MEMWATCH_WARN_FREE_GIB="${MEMWATCH_WARN_FREE_GIB:-1}"
 MEMWATCH_FREE_GATE_GIB="${MEMWATCH_FREE_GATE_GIB:-10}"
 MEMWATCH_GRACE="${MEMWATCH_GRACE:-30}"
 _DEFAULT_MEMWATCH_MIN_GIB="$MEMWATCH_MIN_GIB"
@@ -400,6 +401,7 @@ while true; do
             if ! memwatch_up; then
                 log "memwatch not running; starting it"
                 MEMWATCH_MIN_FREE_GIB="$MEMWATCH_MIN_FREE_GIB" \
+                    MEMWATCH_WARN_FREE_GIB="$MEMWATCH_WARN_FREE_GIB" \
                     MEMWATCH_FREE_GATE_GIB="$MEMWATCH_FREE_GATE_GIB" \
                     MEMWATCH_GRACE="$MEMWATCH_GRACE" \
                     bash "$REPO_DIR/scripts/start-memwatch.sh" "$CONTAINER_NAME" "$MEMWATCH_MIN_GIB" || true
@@ -515,6 +517,7 @@ while true; do
     if ! memwatch_up; then
         log "memwatch not running; starting it"
         MEMWATCH_MIN_FREE_GIB="$MEMWATCH_MIN_FREE_GIB" \
+            MEMWATCH_WARN_FREE_GIB="$MEMWATCH_WARN_FREE_GIB" \
             MEMWATCH_FREE_GATE_GIB="$MEMWATCH_FREE_GATE_GIB" \
             MEMWATCH_GRACE="$MEMWATCH_GRACE" \
             bash "$REPO_DIR/scripts/start-memwatch.sh" "$CONTAINER_NAME" "$MEMWATCH_MIN_GIB" || true

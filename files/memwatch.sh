@@ -43,11 +43,13 @@
 # (SIGTERM; a SIGKILL leaks the container's POSIX shm onto the host's
 # /dev/shm until reboot because of --ipc host), falling back to docker kill.
 #
-# Env: MEMWATCH_MIN_FREE_GIB (2), MEMWATCH_FREE_GATE_GIB (10), MEMWATCH_GRACE (30), MEMWATCH_LOG (this
+# Env: MEMWATCH_MIN_FREE_GIB (0.5), MEMWATCH_WARN_FREE_GIB (1), MEMWATCH_FREE_GATE_GIB (10),
+# MEMWATCH_GRACE (30), MEMWATCH_LOG (this
 # script's own log, for archiving; default logs/memwatch-<container>.log),
 # MEMWATCH_ARCHIVE_DIR (logs/archive).
 CONTAINER="${1:?container}"; MIN_GIB="${2:-6}"; CONSEC="${3:-5}"
-MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-2}"
+MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-0.5}"
+WARN_FREE_GIB="${MEMWATCH_WARN_FREE_GIB:-1}"
 FREE_GATE_GIB="${MEMWATCH_FREE_GATE_GIB:-10}"
 GRACE="${MEMWATCH_GRACE:-30}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,12 +59,14 @@ ARCHIVE_DIR="${MEMWATCH_ARCHIVE_DIR:-$REPO_DIR/logs/archive}"
 
 MIN_KB=$(( MIN_GIB * 1048576 ))
 MIN_FREE_KB=$(( MIN_FREE_GIB * 1048576 ))
+WARN_FREE_KB=$(( WARN_FREE_GIB * 1048576 ))
 FREE_GATE_KB=$(( FREE_GATE_GIB * 1048576 ))
 NEAR_KB=$(( MIN_KB + 1048576 ))            # verbose band: avail floor + 1 GiB
 NEAR_FREE_KB=$(( MIN_FREE_KB + 1048576 ))  # verbose band: free floor + 1 GiB
 
 echo "$(date '+%F %T') watchdog start: container=$CONTAINER" \
      "floors: MemAvailable<${MIN_GIB}GiB, MemFree<${MIN_FREE_GIB}GiB (while MemAvailable<${FREE_GATE_GIB}GiB);" \
+     "warn-only: MemFree<${WARN_FREE_GIB}GiB (same gate);" \
      "trigger=${CONSEC} consecutive samples; grace=${GRACE}s; archive=$ARCHIVE_DIR"
 
 archive_logs() {  # <timestamp>
@@ -144,6 +148,9 @@ while docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}\$"; do
     else
         (( below_avail > 0 )) && echo "$(date '+%T') recovered after ${below_avail} sub-floor MemAvailable sample(s): MemAvailable=$((avail/1024)) MiB"
         below_avail=0
+    fi
+    if (( free < WARN_FREE_KB && avail < FREE_GATE_KB )); then
+        (( below_free == 0 )) && echo "$(date '+%F %T') WARN MemFree under ${WARN_FREE_GIB}GiB (stop floor ${MIN_FREE_GIB}GiB): MemFree=$((free/1024)) MiB MemAvailable=$((avail/1024)) MiB"
     fi
     if (( free < MIN_FREE_KB && avail < FREE_GATE_KB )); then
         below_free=$(( below_free + 1 ))
