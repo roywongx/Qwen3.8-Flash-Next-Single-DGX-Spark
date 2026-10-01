@@ -98,6 +98,14 @@ BREAKER_RESET_ON_BOOT="${BREAKER_RESET_ON_BOOT:-1}"
 # identical lines for one incident. The breaker is a "human must act" state, so
 # the first notice matters and the repeats carry no new information.
 BREAKER_OPEN_ALERT_S="${BREAKER_OPEN_ALERT_S:-21600}"
+# Auto-recovery of a breaker that opened on memory-floor trips only. 1800 s is
+# long enough for a cold reload (measured 9-11 min) plus margin, and short enough
+# that an unattended outage stays an outage for minutes rather than hours.
+MEMWATCH_BREAKER_CLEAR_S="${MEMWATCH_BREAKER_CLEAR_S:-1800}"
+# MemAvailable must be back above this before retrying, otherwise the retry just
+# trips the same floor again. 25 GiB is the observed post-restart steady state
+# with room for one large request.
+BREAKER_CLEAR_MIN_AVAIL_MIB="${BREAKER_CLEAR_MIN_AVAIL_MIB:-25600}"
 PROBE_RETRY_S="${PROBE_RETRY_S:-60}"
 LOAD_GATE_WINDOW_S="${LOAD_GATE_WINDOW_S:-180}"
 
@@ -325,6 +333,10 @@ emergency_stop() {
     fi
     local ec=$(( $(state_get emergency_count 0) + 1 ))
     state_set emergency_count "$ec"
+    # A probe failure is a real fault, not a memory floor: the model is up but
+    # not answering. Mark it so the breaker stays latched even if the surrounding
+    # emergencies were memwatch trips.
+    state_set last_emergency_kind probe
     log "emergency stop recorded ($reason); emergency_count=$ec"
 }
 
@@ -357,9 +369,38 @@ while true; do
 
     # Circuit breaker check.
     if [[ "$(state_get breaker_open 0)" == "1" ]]; then
+        # Auto-clear path: the breaker opened on memory-floor trips only, so it
+        # clears itself once the floor has had time to recover and the host has
+        # room. This is what turns a latched outage into a slow retry.
+        if [[ "$(state_get breaker_auto_clear 0)" == "1" ]]; then
+            _bat=$(state_get breaker_open_at "0")
+            _waited=$(( $(date +%s) - _bat ))
+            _avail_mib=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+            if (( _waited >= MEMWATCH_BREAKER_CLEAR_S && _avail_mib >= ${BREAKER_CLEAR_MIN_AVAIL_MIB:-25600} )); then
+                alert "SUPERVISOR: circuit breaker auto-clearing after ${_waited}s (MemAvailable now ${_avail_mib} MiB, need ${BREAKER_CLEAR_MIN_AVAIL_MIB:-25600}). Retrying."
+                state_set breaker_open 0
+                state_set breaker_open_alert ""
+                state_set breaker_auto_clear 0
+                state_set emergency_count 0
+                state_set memwatch_emergency_count 0
+                state_set window_start ""
+                state_set launch_failures 0
+                log "breaker auto-cleared; counters reset, resuming supervision"
+                continue
+            fi
+            # Still waiting for the floor to recover. Say so once per window so
+            # a long wait is visible instead of silent.
+            _bts=$(state_get breaker_open_alert "0")
+            if (( $(date +%s) - _bts >= BREAKER_OPEN_ALERT_S )); then
+                alert "SUPERVISOR: circuit breaker waiting to auto-clear (${_waited}s/${MEMWATCH_BREAKER_CLEAR_S}s, MemAvailable ${_avail_mib} MiB / need ${BREAKER_CLEAR_MIN_AVAIL_MIB:-25600})."
+                state_set breaker_open_alert "$(date +%s)"
+            fi
+            sleep "$TICK_S"
+            continue
+        fi
         _bts=$(state_get breaker_open_alert "0")
         if (( $(date +%s) - _bts >= BREAKER_OPEN_ALERT_S )); then
-            alert "SUPERVISOR: circuit breaker OPEN (${BREAKER_EMERGENCY_MAX} emergencies in ${BREAKER_WINDOW_S}s). Not relaunching. Human must remove logs/supervisor.state."
+            alert "SUPERVISOR: circuit breaker OPEN (real probe failure; ${BREAKER_EMERGENCY_MAX} emergencies in ${BREAKER_WINDOW_S}s). Not relaunching. Human must remove logs/supervisor.state."
             state_set breaker_open_alert "$(date +%s)"
         fi
         sleep "$TICK_S"
@@ -478,23 +519,45 @@ while true; do
                     state_set last_memwatch_emergency "$_mw_id"
                     ec=$(( $(state_get emergency_count 0) + 1 ))
                     state_set emergency_count "$ec"
+                    mem_ec=$(( $(state_get memwatch_emergency_count 0) + 1 ))
+                    state_set memwatch_emergency_count "$mem_ec"
+                    state_set last_emergency_kind memwatch
                     if [[ -z "$(state_get window_start)" ]]; then
                         state_set window_start "$(date +%s)"
                     fi
-                    log "memwatch emergency counted -> emergency_count=$ec"
+                    log "memwatch emergency counted -> emergency_count=$ec (memwatch=$mem_ec)"
                 fi
             fi
         fi
-        if [[ "$(state_get breaker_open 0)" != "1" ]]; then
-            # Circuit breaker: 3 emergencies in the rolling window -> open.
-            ec=$(state_get emergency_count 0)
-            if (( ec >= BREAKER_EMERGENCY_MAX )); then
-                state_set breaker_open 1
-                state_set breaker_open_alert "0"
-                alert "SUPERVISOR: circuit breaker OPEN (${ec} emergencies). Not relaunching. Human must remove logs/supervisor.state."
-                sleep "$TICK_S"
-                continue
-            fi
+            if [[ "$(state_get breaker_open 0)" != "1" ]]; then
+              # Circuit breaker: 3 emergencies in the rolling window -> open.
+              ec=$(state_get emergency_count 0)
+              if (( ec >= BREAKER_EMERGENCY_MAX )); then
+                  # A memory-floor trip is not a model fault: the watchdog stopped
+                  # the container because MemAvailable/MemFree dipped, and the
+                  # model itself was healthy (2026-10-01: 128K prefill drove
+                  # MemAvailable 7.56 -> 5.99 GiB and the floor fired at 6111 MiB).
+                  # Leaving the breaker latched there turned a ~10 min reload
+                  # into an unattended outage until a human removed the state
+                  # file — the opposite of what a supervisor is for. So a breaker
+                  # whose emergencies were ALL memwatch trips clears itself after
+                  # MEMWATCH_BREAKER_CLEAR_S and retries. If even one emergency was
+                  # a real probe failure, the breaker stays latched: that is a
+                  # genuine fault and a human should look.
+                  if [[ "$(state_get last_emergency_kind memwatch)" == "memwatch" ]]; then
+                      state_set breaker_open 1
+                      state_set breaker_open_at "$(date +%s)"
+                      state_set breaker_auto_clear 1
+                      alert "SUPERVISOR: circuit breaker OPEN (${ec} memory-floor emergencies, no probe failure). Will auto-clear and retry in ${MEMWATCH_BREAKER_CLEAR_S}s."
+                  else
+                      state_set breaker_open 1
+                      state_set breaker_open_at "$(date +%s)"
+                      state_set breaker_auto_clear 0
+                      alert "SUPERVISOR: circuit breaker OPEN (${ec} emergencies, at least one a real probe failure). Not relaunching. Human must remove logs/supervisor.state."
+                  fi
+                  sleep "$TICK_S"
+                  continue
+              fi
             # Persistent exponential backoff: 30 s * 2^n, cap 15 min, keyed on
             # launch_failures in state so a supervisor crash restart resumes it.
             # lf=0 is a clean cold start (or first tick after reboot): backoff
