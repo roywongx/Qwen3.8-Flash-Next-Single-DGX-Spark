@@ -224,7 +224,7 @@ OS_RESERVE_GIB="${OS_RESERVE_GIB:-16.0}"
 MEMWATCH_MIN_GIB="${MEMWATCH_MIN_GIB:-6}"
 # ... or MemFree stays below this. The NVIDIA driver refuses allocations
 # (NV_ERR_NO_MEMORY) at MemFree ~3 GiB while MemAvailable still reads 6+.
-MEMWATCH_MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-2}"
+MEMWATCH_MIN_FREE_GIB="${MEMWATCH_MIN_FREE_GIB:-0.5}"
 # The MemFree floor only counts while MemAvailable is under this: with stock
 # kernel watermarks MemFree sits near zero whenever the page cache is full of
 # reclaimable data (measured: 0.9 GiB free, 32 GiB available, during load).

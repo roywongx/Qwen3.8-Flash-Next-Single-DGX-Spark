@@ -34,10 +34,34 @@ container_state=$(docker inspect -f '{{.State.Status}}' qwen38-flash-next 2>/dev
 health=$(curl -s -o /dev/null -w '%{http_code}' -m 8 http://127.0.0.1:8000/health 2>/dev/null || echo 000)
 nvrm=$(journalctl -k --since '1 hour ago' --no-pager 2>/dev/null | grep -c NV_ERR_NO_MEMORY || echo 0)
 
+# Delivered-notification volume, read-only from netops-ai. This is the metric
+# that says whether the 2026-09-30 alert fixes actually helped: SUPERVISOR and
+# memwatch were 38 of the 78 notices sent that day, both since throttled.
+# Opened mode=ro so a sampling run can never write to (or lock) the netops DB.
+notice_counts() {
+    python3 - <<'PY' 2>/dev/null || echo "0 0 0"
+import os, sqlite3, time
+db = "/home/roy/netops-ai/netops.db"
+if not os.path.exists(db):
+    print("0 0 0"); raise SystemExit
+try:
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    row = c.execute(
+        "SELECT SUM(sent_ok=1),"
+        "       SUM(sent_ok=1 AND text LIKE 'SUPERVISOR%'),"
+        "       SUM(sent_ok=1 AND text LIKE 'memwatch%')"
+        "  FROM notices WHERE ts >= ?", (time.time() - 86400,)).fetchone()
+    print(*(int(v or 0) for v in row))
+except Exception:
+    print("0 0 0")
+PY
+}
+read -r n_all n_supervisor n_memwatch <<<"$(notice_counts)"
+
 if [[ ! -f "$SAMPLE" ]]; then
-    printf 'time\tMemTotal\tMemFree\tMemAvailable\tdriver\tcontainer\thealth\tnvrm_1h\n' > "$SAMPLE"
+    printf 'time\tMemTotal\tMemFree\tMemAvailable\tdriver\tcontainer\thealth\tnvrm_1h\tnotice_24h\tsupervisor_24h\tmemwatch_24h\n' > "$SAMPLE"
 fi
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$ts" \
     "$(gib "${m_MemTotal:-0}")" \
     "$(gib "${m_MemFree:-0}")" \
@@ -45,9 +69,12 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(gib "$driver")" \
     "$container_state" \
     "$health" \
-    "$nvrm" >> "$SAMPLE"
+    "$nvrm" \
+    "${n_all:-0}" \
+    "${n_supervisor:-0}" \
+    "${n_memwatch:-0}" >> "$SAMPLE"
 
 # Keep 30 days; one row per run.
 find "$OUT_DIR" -name 'samples.tsv*' -mtime +30 -delete 2>/dev/null || true
 
-echo "$ts driver=$(gib "$driver")GiB MemAvailable=$(gib "${m_MemAvailable:-0}")GiB health=$health nvrm_1h=$nvrm"
+echo "$ts driver=$(gib "$driver")GiB MemAvailable=$(gib "${m_MemAvailable:-0}")GiB health=$health nvrm_1h=$nvrm notices_24h=${n_all:-0}(supervisor=${n_supervisor:-0} memwatch=${n_memwatch:-0})"
