@@ -41,6 +41,7 @@
 !/scripts/memwatch-rotate.sh
 !/scripts/heartbeat.sh
 !/scripts/observe-snapshot.sh
+!/scripts/ladder-test.py
 !/files/memwatch.sh
 !/files/build_ple_packed_table.py
 !/files/patch_ple_layer.py
